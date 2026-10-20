@@ -10,8 +10,19 @@ permissions:
 # Pas de cache : GitHub limite un cache au tag qui l'a créé, un nouveau tag n'y aurait pas accès.
 # Les vérifications (fmt, clippy, tests) se font en local avant de taguer.
 
+# La release est créée d'abord, puis chaque build y attache son binaire dès qu'il a fini :
+# un runner macOS lent ou en échec ne bloque pas Linux et Windows. Un « Re-run failed jobs »
+# ajoute ensuite le binaire manquant à la même release.
 jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
   linux:
+    needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,12 +34,12 @@ jobs:
           cp target/release/line2signal assets/line2signal.desktop pkg/
           cp assets/icon.png pkg/line2signal.png
           tar -czf dist/line2signal-linux-x86_64.tar.gz -C pkg .
-      - uses: actions/upload-artifact@v4
+      - uses: softprops/action-gh-release@v2
         with:
-          name: linux
-          path: dist/*
+          files: dist/*
 
   windows:
+    needs: release
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,12 +50,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/line2signal.exe dist/line2signal-windows-x86_64.exe
-      - uses: actions/upload-artifact@v4
+      - uses: softprops/action-gh-release@v2
         with:
-          name: windows
-          path: dist/*
+          files: dist/*
 
   macos:
+    needs: release
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,20 +93,6 @@ jobs:
           </plist>
           EOF
           cd dist && ditto -c -k --keepParent "LINE to Signal.app" line2signal-macos-universal.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          path: dist/*.zip
-
-  release:
-    needs: [linux, windows, macos]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
-          generate_release_notes: true
+          files: dist/*.zip
