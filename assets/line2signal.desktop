@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LINE to Signal
+Comment=Convertit un pack de stickers LINE en pack Signal
+Exec=line2signal
+Icon=line2signal
+Categories=Utility;Graphics;
+StartupWMClass=line2signal
