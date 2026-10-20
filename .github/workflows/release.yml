@@ -8,6 +8,19 @@ permissions:
   contents: write
 
 jobs:
+  # Vérifications avant publication ; elles tournent en parallèle des builds.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -88,7 +101,7 @@ jobs:
           path: dist/*.zip
 
   release:
-    needs: [linux, windows, macos]
+    needs: [check, linux, windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
