@@ -1,5 +1,7 @@
 # LINE → Signal
 
+[![Release](https://github.com/Konosprod/line2sginal/actions/workflows/release.yml/badge.svg)](https://github.com/Konosprod/line2sginal/actions/workflows/release.yml)
+
 Convertit un pack de stickers LINE (fixe ou animé) en pack de stickers Signal.
 
 ![Choix des stickers](docs/screenshots/2-choisis.png)
