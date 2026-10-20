@@ -34,6 +34,8 @@ pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(egui::ThemePreference::Light);
     ctx.set_style_of(Theme::Light, style());
     ctx.set_style_of(Theme::Dark, style());
+    // Un cran de molette fait 40 points par défaut, pour des rangées de cartes de 220 points.
+    ctx.options_mut(|o| o.input_options.line_scroll_speed = 100.0);
 }
 
 /// Nunito pour l'interface, puis les polices d'egui (symboles), puis Noto Sans JP (japonais).
