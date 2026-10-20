@@ -7,26 +7,15 @@ on:
 permissions:
   contents: write
 
-jobs:
-  # Vérifications avant publication ; elles tournent en parallèle des builds.
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+# Pas de cache : GitHub limite un cache au tag qui l'a créé, un nouveau tag n'y aurait pas accès.
+# Les vérifications (fmt, clippy, tests) se font en local avant de taguer.
 
+jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
       - name: Package
         run: |
@@ -44,7 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
       - name: Package
         shell: bash
@@ -63,7 +51,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
       - run: |
           cargo build --release --locked --target aarch64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
@@ -101,7 +88,7 @@ jobs:
           path: dist/*.zip
 
   release:
-    needs: [check, linux, windows, macos]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
