@@ -796,26 +796,26 @@ impl App {
         let mut open = true;
         let mut send = false;
         let dialog = &mut self.upload;
+        // L'aide défile pour que les champs et le bouton restent visibles dans une petite fenêtre.
+        let help_height = (ctx.screen_rect().height() - 380.0).max(120.0);
         egui::Window::new(theme::section("Envoyer à Signal", theme::BLUE))
             .collapsible(false)
             .resizable(false)
+            .default_width(540.0)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(
                     "L'envoi se fait avec ton compte, via les identifiants de Signal Desktop.",
                 );
-                egui::CollapsingHeader::new("Où trouver ces identifiants ?").show(ui, |ui| {
-                    ui.label("1. Dans Signal Desktop : Affichage → Outils de développement.");
-                    ui.label("2. Dans l'onglet Console, tape :");
-                    for line in [
-                        "window.reduxStore.getState().items.uuid_id",
-                        "window.reduxStore.getState().items.password",
-                    ] {
-                        ui.add(egui::Label::new(RichText::new(line).monospace()).selectable(true));
-                    }
-                    ui.label("3. Colle les deux valeurs ci-dessous.");
-                });
+                let empty = dialog.creds.username.is_empty() && dialog.creds.password.is_empty();
+                egui::CollapsingHeader::new("Où trouver ces identifiants ?")
+                    .default_open(empty)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(help_height)
+                            .show(ui, credentials_help);
+                    });
                 ui.add_space(6.0);
                 egui::Grid::new("creds")
                     .num_columns(2)
@@ -916,6 +916,65 @@ fn load_icon(ctx: &egui::Context) -> TextureHandle {
     let size = [image.width() as usize, image.height() as usize];
     let image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
     ctx.load_texture("icon", image, TextureOptions::LINEAR)
+}
+
+/// Commandes qui relancent Signal Desktop avec les outils de développement.
+const SIGNAL_DEVTOOLS_COMMANDS: &[(&str, &str)] = if cfg!(target_os = "windows") {
+    &[(
+        "",
+        r#""%LOCALAPPDATA%\Programs\signal-desktop\Signal.exe" --enable-dev-tools"#,
+    )]
+} else if cfg!(target_os = "macos") {
+    &[("", "open -a Signal --args --enable-dev-tools")]
+} else {
+    &[
+        (
+            "Flatpak",
+            "flatpak run org.signal.Signal --enable-dev-tools",
+        ),
+        ("Paquet .deb", "signal-desktop --enable-dev-tools"),
+    ]
+};
+
+/// En production, le menu des outils de développement de Signal Desktop n'existe qu'avec
+/// `--enable-dev-tools`, et la console n'accède qu'à l'objet `SignalDebug`.
+fn credentials_help(ui: &mut egui::Ui) {
+    let code = |ui: &mut egui::Ui, text: &str| {
+        egui::Frame::new()
+            .fill(theme::mix(theme::BG, theme::ORANGE, 0.08))
+            .corner_radius(8)
+            .inner_margin(Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(text).monospace()).selectable(true));
+            });
+    };
+    ui.label("1. Quitte complètement Signal Desktop, puis relance-le depuis un terminal :");
+    for (label, command) in SIGNAL_DEVTOOLS_COMMANDS {
+        if !label.is_empty() {
+            ui.label(RichText::new(*label).color(theme::MUTED).size(13.0));
+        }
+        code(ui, command);
+    }
+    let shortcut = if cfg!(target_os = "macos") {
+        "Cmd+Option+I"
+    } else {
+        "Ctrl+Shift+I"
+    };
+    ui.label(format!(
+        "2. Ouvre les outils de développement : menu Affichage, ou {shortcut}."
+    ));
+    ui.label("3. Dans l'onglet Console, tape ces deux lignes une par une :");
+    code(ui, "SignalDebug.getStorageItem('uuid_id')");
+    code(ui, "SignalDebug.getStorageItem('password')");
+    ui.label(
+        RichText::new(
+            "Si la console refuse le collage, tape d'abord « allow pasting ». \
+             Ces identifiants donnent accès à ton compte : ne les partage avec personne.",
+        )
+        .size(13.0)
+        .color(theme::MUTED),
+    );
+    ui.label("4. Copie les deux valeurs ci-dessous.");
 }
 
 /// Retire les guillemets copiés avec une valeur de la console.

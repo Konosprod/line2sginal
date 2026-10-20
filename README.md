@@ -19,11 +19,21 @@ Le détail des réductions s'affiche au survol de la taille de chaque sticker.
 
 ## Identifiants Signal (envoi direct)
 
-Dans Signal Desktop : *Affichage → Outils de développement*, onglet *Console* :
+En production, Signal Desktop n'affiche ses outils de développement qu'avec `--enable-dev-tools`.
+Quitte complètement Signal, puis relance-le :
+
+| Système | Commande |
+| --- | --- |
+| Linux (Flatpak) | `flatpak run org.signal.Signal --enable-dev-tools` |
+| Linux (.deb) | `signal-desktop --enable-dev-tools` |
+| macOS | `open -a Signal --args --enable-dev-tools` |
+| Windows | `"%LOCALAPPDATA%\Programs\signal-desktop\Signal.exe" --enable-dev-tools` |
+
+Ouvre ensuite *Affichage → Outils de développement* (Ctrl+Shift+I, ou Cmd+Option+I), onglet *Console* :
 
 ```js
-window.reduxStore.getState().items.uuid_id
-window.reduxStore.getState().items.password
+SignalDebug.getStorageItem('uuid_id')
+SignalDebug.getStorageItem('password')
 ```
 
 Les identifiants peuvent être mémorisés dans le trousseau du système.
