@@ -2,13 +2,53 @@
 
 Convertit un pack de stickers LINE (fixe ou animé) en pack de stickers Signal.
 
-1. **Import** : colle l'URL du pack (`https://store.line.me/stickershop/product/11537/fr`) ou son ID.
-   L'archive vient de `dl.stickershop.line.naver.jp/products/0/0/1/<ID>/iphone/stickers@2x.zip`
-   (ou `stickerpack@2x.zip` pour les packs animés).
-2. **Sélection** : choisis les stickers, leur emoji et la couverture (clic droit).
-3. **Pack Signal** : titre, auteur, puis
-   - **Exporter le dossier** : des fichiers prêts pour Signal Desktop → *Fichier → Créer/téléverser un pack de stickers* ;
-   - **Envoyer à Signal** : envoi direct, qui renvoie un lien `https://signal.art/addstickers/…`.
+![Choix des stickers](docs/screenshots/2-choisis.png)
+
+## Utilisation
+
+L'application se déroule en trois étapes, rappelées dans la barre de gauche.
+
+### 1. Importe
+
+Colle l'adresse du pack sur le store LINE (`https://store.line.me/stickershop/product/11537/fr`) ou
+simplement son numéro, puis **Télécharger**. Les pastilles « Pour essayer » chargent des packs d'exemple,
+et le lien du bas ouvre un zip LINE déjà téléchargé.
+
+![Écran d'import](docs/screenshots/1-importe.png)
+
+### 2. Choisis
+
+- **Clic** sur un sticker pour le sélectionner ou le retirer (pastille rose ✔) ; *Tout* / *Aucun* en un clic.
+- **Survol** pour voir l'animation (badge ▶ violet).
+- **Clic droit** pour en faire la couverture du pack (étoile jaune).
+- Chaque sticker a son **emoji**, obligatoire pour Signal. *Emoji pour tous* + *Appliquer* le donne à toute
+  la sélection.
+- La pastille de taille est **verte** si le sticker est intact, **orange** s'il a fallu le réduire
+  (détail au survol), **rouge** s'il dépasse la limite de Signal.
+
+Le bouton emoji ouvre une palette par catégories. Le champ *Autre emoji* accepte n'importe quel emoji
+(tons de peau, drapeaux…) et en affiche l'aperçu.
+
+![Palette d'emojis](docs/screenshots/2-emojis.png)
+
+### 3. Envoie
+
+Vérifie le titre et l'auteur (repris de LINE, avec choix de la langue) et la taille des stickers.
+L'encadré vert confirme que le pack est prêt ; sinon, l'encadré orange liste ce qu'il reste à corriger.
+
+![Configuration du pack](docs/screenshots/3-envoie.png)
+
+Deux façons de l'ajouter à Signal :
+
+- **Envoyer à Signal** : envoi direct avec ton compte (voir [Identifiants Signal](#identifiants-signal-envoi-direct)).
+  Tu obtiens un lien `https://signal.art/addstickers/…` : **Ouvrir dans Signal**, puis *Installer*.
+- **Exporter un dossier** : des fichiers `001.png`, `002.png`… et un `pack.json` avec les emojis, à importer
+  dans Signal Desktop via *Fichier → Créer/téléverser un pack de stickers*.
+
+![Pack envoyé](docs/screenshots/3-lien.png)
+
+Le pack n'est listé nulle part, mais toute personne qui a le lien peut l'installer, et Signal ne permet pas
+de le supprimer ensuite.
 
 ## Conversion
 
@@ -37,6 +77,9 @@ SignalDebug.getStorageItem('password')
 ```
 
 Les identifiants peuvent être mémorisés dans le trousseau du système.
+Ces instructions sont aussi rappelées dans la fenêtre d'envoi :
+
+![Fenêtre d'envoi](docs/screenshots/identifiants.png)
 
 ## Installation
 
@@ -58,8 +101,5 @@ et [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) (`assets/fonts`
 ```sh
 cargo run
 cargo test                    # tests hors ligne
-cargo test -- --ignored       # téléchargements réels depuis LINE, captures d'écran
-SCREENSHOT_DIR=/tmp/captures cargo test --release screenshots -- --ignored
+cargo test -- --ignored
 ```
-
-Pousser un tag `v*` construit les binaires Linux, Windows et macOS (universel) et publie la release.
