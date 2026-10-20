@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, RichText, Sense, TextEdit, Vec2};
+use eframe::egui::{
+    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Margin, RichText, Sense, Stroke,
+    TextEdit, TextureHandle, TextureOptions, Vec2,
+};
 
 use line2signal::convert::{Converted, FitMode, MAX_BYTES};
 use line2signal::line::{self, LinePack};
@@ -11,22 +14,43 @@ use line2signal::signal::upload::Credentials;
 use line2signal::signal::{Pack, PackSticker, MAX_STICKERS};
 
 use crate::credentials;
+use crate::emoji::Emojis;
+use crate::theme::{self, mix};
 use crate::worker::{Msg, Preview, Worker, THUMBNAIL_SIDE};
 
 const THUMB: f32 = THUMBNAIL_SIDE as f32;
-const CARD_WIDTH: f32 = THUMB + 24.0;
+/// Largeur d'une carte de sticker : vignette, marges et bordure.
+const CARD_WIDTH: f32 = THUMB + 2.0 * 10.0 + 2.0 * 2.5;
+const GRID_GAP: f32 = 14.0;
 const DEFAULT_EMOJI: &str = "🙂";
-const EMOJIS: &[&str] = &[
-    "😀", "😂", "🥰", "😍", "😘", "😉", "😎", "🤔", "😴", "😭", "😢", "😡", "😱", "😳", "🙄", "😅",
-    "🙂", "🙏", "👍", "👎", "👏", "👋", "🙌", "💪", "❤", "💔", "✨", "🎉", "🔥", "💯", "❓", "❗",
-    "💤", "🍺", "☕", "🐻", "🐰", "🐥", "🐱", "🐶",
-];
+/// Packs proposés en exemple sur l'écran d'import.
+const EXAMPLES: [(&str, &str); 2] = [("11537", "Brown & Cony · animé"), ("789", "Sally · fixe")];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Step {
     Import,
     Selection,
     Pack,
+}
+
+impl Step {
+    const ALL: [Step; 3] = [Step::Import, Step::Selection, Step::Pack];
+
+    fn color(self) -> Color32 {
+        match self {
+            Step::Import => theme::ORANGE,
+            Step::Selection => theme::PINK,
+            Step::Pack => theme::BLUE,
+        }
+    }
+
+    fn labels(self) -> (&'static str, &'static str) {
+        match self {
+            Step::Import => ("Importe", "un pack LINE"),
+            Step::Selection => ("Choisis", "tes stickers préférés"),
+            Step::Pack => ("Envoie", "le pack dans Signal"),
+        }
+    }
 }
 
 struct Item {
@@ -48,6 +72,8 @@ struct UploadDialog {
 
 pub struct App {
     worker: Worker,
+    emojis: Emojis,
+    icon: TextureHandle,
     step: Step,
     input: String,
     busy: Option<(String, Option<f32>)>,
@@ -71,9 +97,12 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        install_fonts(&cc.egui_ctx);
+        let ctx = &cc.egui_ctx;
+        theme::apply(ctx);
         Self {
-            worker: Worker::new(cc.egui_ctx.clone()),
+            worker: Worker::new(ctx.clone()),
+            emojis: Emojis::load(ctx),
+            icon: load_icon(ctx),
             step: Step::Import,
             input: String::new(),
             busy: None,
@@ -234,6 +263,15 @@ impl App {
                 ));
             }
         }
+        for (n, (_, item)) in self.selected().enumerate() {
+            let emoji = item.emoji.trim();
+            if !emoji.is_empty() && !self.emojis.is_emoji(emoji) {
+                problems.push(format!(
+                    "Le sticker n°{} a « {emoji} » comme emoji, qui n'en est pas un.",
+                    n + 1
+                ));
+            }
+        }
         problems.extend(self.build_pack().validate());
         problems
     }
@@ -241,149 +279,253 @@ impl App {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if let Some((text, fraction)) = &self.busy {
-                ui.spinner();
+                ui.add(egui::Spinner::new().color(theme::PINK));
                 ui.label(text);
                 if let Some(f) = fraction {
                     ui.add(
                         egui::ProgressBar::new(*f)
-                            .desired_width(220.0)
-                            .show_percentage(),
+                            .desired_width(240.0)
+                            .fill(theme::PINK)
+                            .corner_radius(99),
                     );
                 }
             } else if let Some(error) = &self.error {
-                if ui.small_button("✖").on_hover_text("Effacer").clicked() {
-                    self.error = None;
-                    return;
-                }
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("⚠ {error}")).color(ui.visuals().error_fg_color),
-                    )
-                    .wrap(),
-                );
+                ui.label(RichText::new("⚠").color(theme::RED).size(18.0));
+                ui.add(egui::Label::new(RichText::new(error).color(theme::RED)).wrap());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.small_button("✖").on_hover_text("Effacer").clicked() {
+                        self.error = None;
+                    }
+                });
             } else {
                 let done = self.items.iter().filter(|i| i.converted.is_some()).count();
                 if done < self.items.len() {
-                    ui.spinner();
-                    ui.label(format!("Conversion : {done} / {}", self.items.len()));
+                    ui.add(egui::Spinner::new().color(theme::BLUE));
+                    ui.label(format!(
+                        "Conversion des stickers : {done} / {}",
+                        self.items.len()
+                    ));
+                    ui.add(
+                        egui::ProgressBar::new(done as f32 / self.items.len() as f32)
+                            .desired_width(240.0)
+                            .fill(theme::BLUE)
+                            .corner_radius(99),
+                    );
+                } else if self.items.is_empty() {
+                    ui.label(RichText::new("Prêt à importer !").color(theme::MUTED));
                 } else {
-                    ui.weak("Prêt.");
+                    ui.label(RichText::new("✔").color(theme::GREEN));
+                    ui.label(
+                        RichText::new(format!("{} stickers convertis", self.items.len()))
+                            .color(theme::MUTED),
+                    );
                 }
             }
         });
     }
 
-    fn steps(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.heading("LINE → Signal");
-        ui.separator();
-        for (step, label) in [
-            (Step::Import, "1. Import"),
-            (Step::Selection, "2. Sélection"),
-            (Step::Pack, "3. Pack Signal"),
-        ] {
-            let enabled = step == Step::Import || !self.items.is_empty();
-            ui.add_enabled_ui(enabled, |ui| {
-                ui.selectable_value(&mut self.step, step, RichText::new(label).size(16.0));
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        theme::vertical_gradient(
+            ui.painter(),
+            ui.max_rect(),
+            &[theme::ORANGE, theme::PINK, theme::PURPLE],
+        );
+        egui::Frame::new()
+            .inner_margin(Margin::symmetric(16, 22))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Image::new(&self.icon).fit_to_exact_size(Vec2::splat(52.0)));
+                    ui.vertical(|ui| {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("LINE → Signal")
+                                .family(theme::heavy())
+                                .size(21.0)
+                                .color(Color32::WHITE),
+                        );
+                        ui.label(
+                            RichText::new("des stickers plein de joie")
+                                .size(13.5)
+                                .color(Color32::from_white_alpha(220)),
+                        );
+                    });
+                });
+                ui.add_space(30.0);
+                for (n, step) in Step::ALL.into_iter().enumerate() {
+                    let enabled = step == Step::Import || !self.items.is_empty();
+                    if step_button(ui, n + 1, step, self.step == step, enabled).clicked() {
+                        self.step = step;
+                    }
+                    ui.add_space(4.0);
+                }
             });
-        }
     }
 
     fn import_panel(&mut self, ui: &mut egui::Ui) {
         let idle = self.busy.is_none();
-        ui.heading("Importer un pack LINE");
-        ui.label("Colle l'URL du pack sur le store LINE ou son identifiant numérique.");
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            let edit = ui.add(
-                TextEdit::singleline(&mut self.input)
-                    .hint_text("https://store.line.me/stickershop/product/11537/fr")
-                    .desired_width(440.0),
+        ui.label(theme::title("Des stickers LINE… dans Signal !"));
+        ui.label(theme::subtitle(
+            "Colle l'adresse d'un pack du store LINE, choisis tes stickers préférés, et hop : direction Signal.",
+        ));
+        ui.add_space(12.0);
+
+        theme::card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(theme::section("Adresse ou numéro du pack", theme::ORANGE));
+            ui.horizontal(|ui| {
+                let edit = ui.add(
+                    TextEdit::singleline(&mut self.input)
+                        .hint_text("https://store.line.me/stickershop/product/11537/fr")
+                        .font(FontId::proportional(17.0))
+                        .margin(Vec2::new(12.0, 9.0))
+                        .desired_width((ui.available_width() - 160.0).max(200.0)),
+                );
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let clicked = ui
+                    .add_enabled(idle, theme::primary("Télécharger", theme::ORANGE))
+                    .clicked();
+                if idle && (enter || clicked) {
+                    self.start_fetch();
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Pour essayer :").color(theme::MUTED));
+                for (i, (id, label)) in EXAMPLES.iter().enumerate() {
+                    let color = [theme::PINK, theme::PURPLE][i % 2];
+                    let chip = theme::chip_button(&format!("{id} · {label}"), color);
+                    if ui.add_enabled(idle, chip).clicked() {
+                        self.input = id.to_string();
+                        self.start_fetch();
+                    }
+                }
+            });
+            ui.add_space(2.0);
+            let zip = ui.add_enabled(
+                idle,
+                egui::Link::new("ou ouvrir un zip LINE déjà téléchargé…"),
             );
-            let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let clicked = ui
-                .add_enabled(idle, egui::Button::new("Télécharger"))
-                .clicked();
-            if idle && (enter || clicked) {
-                self.start_fetch();
+            if zip.clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Archive LINE", &["zip"])
+                    .pick_file()
+                {
+                    self.error = None;
+                    self.busy = Some(("Lecture de l'archive…".into(), None));
+                    self.worker.open_zip(path);
+                }
             }
         });
-        ui.add_space(4.0);
-        if ui
-            .add_enabled(idle, egui::Button::new("Ouvrir un zip LINE local…"))
-            .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Archive LINE", &["zip"])
-                .pick_file()
-            {
-                self.error = None;
-                self.busy = Some(("Lecture de l'archive…".into(), None));
-                self.worker.open_zip(path);
-            }
-        }
-
-        let Some(pack) = &self.line else { return };
         ui.add_space(12.0);
-        ui.separator();
-        egui::Grid::new("line-pack")
-            .num_columns(2)
-            .spacing([16.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("Pack");
-                ui.label(pack.meta.package_id.to_string());
-                ui.end_row();
-                ui.label("Titre");
-                ui.label(pack.title(&self.lang));
-                ui.end_row();
-                ui.label("Auteur");
-                ui.label(pack.author(&self.lang));
-                ui.end_row();
-                ui.label("Stickers");
-                let animated = self.items.iter().filter(|i| i.animated).count();
-                ui.label(format!("{} dont {animated} animés", self.items.len()));
-                ui.end_row();
-            });
-        ui.add_space(8.0);
-        if ui.button("Choisir les stickers →").clicked() {
-            self.step = Step::Selection;
+
+        match &self.line {
+            Some(pack) => {
+                let time = ui.input(|i| i.time);
+                let mut next = false;
+                theme::card().show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(112.0), Sense::hover());
+                        if let Some(item) = self.effective_cover().and_then(|c| self.items.get(c)) {
+                            paint_preview(ui, rect, &item.preview, Some(time));
+                        }
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(pack.title(&self.lang))
+                                    .family(theme::heavy())
+                                    .size(22.0)
+                                    .color(theme::INK),
+                            );
+                            ui.label(
+                                RichText::new(format!("par {}", pack.author(&self.lang)))
+                                    .color(theme::MUTED),
+                            );
+                            ui.horizontal(|ui| {
+                                theme::chip(
+                                    ui,
+                                    format!("{} stickers", self.items.len()),
+                                    theme::BLUE,
+                                );
+                                let animated = self.items.iter().filter(|i| i.animated).count();
+                                if animated > 0 {
+                                    theme::chip(ui, format!("{animated} animés"), theme::PINK);
+                                } else {
+                                    theme::chip(ui, "fixes", theme::GREEN);
+                                }
+                                theme::chip(
+                                    ui,
+                                    format!("pack {}", pack.meta.package_id),
+                                    theme::PURPLE,
+                                );
+                            });
+                            next = ui
+                                .add(theme::primary("Choisir les stickers →", theme::PINK))
+                                .clicked();
+                        });
+                    });
+                });
+                if next {
+                    self.step = Step::Selection;
+                }
+            }
+            None => {
+                ui.columns(3, |cols| {
+                    for (col, step) in cols.iter_mut().zip(Step::ALL) {
+                        let (head, tail) = step.labels();
+                        theme::tinted_card(step.color()).show(col, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(theme::section(head, step.color()));
+                            ui.label(RichText::new(tail).color(theme::INK));
+                        });
+                    }
+                });
+            }
         }
     }
 
     fn selection_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("Tout").clicked() {
-                self.items.iter_mut().for_each(|i| i.selected = true);
-            }
-            if ui.button("Aucun").clicked() {
-                self.items.iter_mut().for_each(|i| i.selected = false);
-            }
-            ui.separator();
-            let n = self.selected().count();
-            let color = if n == 0 || n > MAX_STICKERS {
-                ui.visuals().error_fg_color
-            } else {
-                ui.visuals().text_color()
-            };
-            ui.colored_label(color, format!("{n} / {MAX_STICKERS} sélectionnés"));
-            ui.separator();
-            ui.label("Emoji :");
-            ui.add(TextEdit::singleline(&mut self.default_emoji).desired_width(32.0));
-            emoji_menu(ui, &mut self.default_emoji);
-            if ui.button("Appliquer aux sélectionnés").clicked() {
-                for item in self.items.iter_mut().filter(|i| i.selected) {
-                    item.emoji = self.default_emoji.clone();
+            ui.label(theme::title("Choisis tes stickers"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(theme::primary("Continuer →", theme::BLUE)).clicked() {
+                    self.step = Step::Pack;
                 }
-            }
-            ui.separator();
-            if ui.button("Continuer →").clicked() {
-                self.step = Step::Pack;
-            }
+            });
         });
-        ui.weak(
-            "Clic : (dé)sélectionner · survol : animation · clic droit : définir comme couverture",
-        );
-        ui.separator();
+        ui.label(theme::subtitle(
+            "Clic : sélectionner · survol : animation · clic droit : couverture",
+        ));
+        ui.add_space(8.0);
+        theme::card()
+            .inner_margin(Margin::symmetric(16, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Tout").clicked() {
+                        self.items.iter_mut().for_each(|i| i.selected = true);
+                    }
+                    if ui.button("Aucun").clicked() {
+                        self.items.iter_mut().for_each(|i| i.selected = false);
+                    }
+                    let n = self.selected().count();
+                    let color = if n == 0 || n > MAX_STICKERS {
+                        theme::RED
+                    } else {
+                        theme::PINK
+                    };
+                    theme::chip(ui, format!("{n} / {MAX_STICKERS}"), color).on_hover_text(format!(
+                        "{n} stickers sélectionnés, {MAX_STICKERS} au maximum dans un pack Signal"
+                    ));
+                    ui.separator();
+                    ui.label("Emoji pour tous");
+                    self.emojis.picker(ui, &mut self.default_emoji, 22.0);
+                    if ui.button("Appliquer").clicked() {
+                        for item in self.items.iter_mut().filter(|i| i.selected) {
+                            item.emoji = self.default_emoji.clone();
+                        }
+                    }
+                });
+            });
+        ui.add_space(10.0);
 
         let time = ui.input(|i| i.time);
         let cover = self.effective_cover();
@@ -391,14 +533,31 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = Vec2::splat(10.0);
-                    for (i, item) in self.items.iter_mut().enumerate() {
-                        if sticker_card(ui, item, cover == Some(i), time) {
-                            new_cover = Some(i);
+                egui::Frame::new()
+                    .inner_margin(Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::splat(GRID_GAP);
+                        // Les cartes ont une largeur fixe : on calcule soi-même le nombre de colonnes.
+                        let width = ui.available_width();
+                        let columns = ((width + GRID_GAP) / (CARD_WIDTH + GRID_GAP))
+                            .floor()
+                            .max(1.0);
+                        let used = columns * CARD_WIDTH + (columns - 1.0) * GRID_GAP;
+                        let indent = ((width - used) / 2.0).max(0.0);
+                        let columns = columns as usize;
+                        let mut items = self.items.iter_mut().enumerate().peekable();
+                        while items.peek().is_some() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(indent - GRID_GAP);
+                                for (i, item) in items.by_ref().take(columns) {
+                                    if sticker_card(ui, item, &self.emojis, cover == Some(i), time)
+                                    {
+                                        new_cover = Some(i);
+                                    }
+                                }
+                            });
                         }
-                    }
-                });
+                    });
             });
         if let Some(c) = new_cover {
             self.cover = Some(c);
@@ -407,45 +566,58 @@ impl App {
     }
 
     fn pack_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Configurer le pack Signal");
-        ui.add_space(6.0);
+        ui.label(theme::title("Ton pack Signal"));
+        ui.label(theme::subtitle(
+            "Dernières retouches avant le grand départ.",
+        ));
+        ui.add_space(8.0);
+        self.results(ui);
+
         let mut restart = false;
         let time = ui.input(|i| i.time);
         let cover = self.effective_cover();
-        egui::Grid::new("pack-form")
-            .num_columns(2)
-            .spacing([16.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Titre");
-                ui.add(TextEdit::singleline(&mut self.title).desired_width(380.0));
-                ui.end_row();
-                ui.label("Auteur");
-                ui.add(TextEdit::singleline(&mut self.author).desired_width(380.0));
-                ui.end_row();
-
-                if let Some(line) = &self.line {
-                    let languages = line.languages();
-                    if languages.len() > 1 {
-                        ui.label("Langue LINE");
-                        let mut lang = self.lang.clone();
-                        egui::ComboBox::from_id_salt("lang")
-                            .selected_text(&lang)
-                            .show_ui(ui, |ui| {
-                                for l in &languages {
-                                    ui.selectable_value(&mut lang, l.clone(), l);
+        ui.horizontal_top(|ui| {
+            let form_width = (ui.available_width() - 250.0).max(320.0);
+            theme::card().show(ui, |ui| {
+                ui.set_width(form_width - 36.0);
+                ui.vertical(|ui| {
+                    ui.label(theme::section("Titre", theme::BLUE));
+                    ui.add(
+                        TextEdit::singleline(&mut self.title)
+                            .font(FontId::proportional(17.0))
+                            .margin(Vec2::new(10.0, 7.0))
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.label(theme::section("Auteur", theme::BLUE));
+                    ui.add(
+                        TextEdit::singleline(&mut self.author)
+                            .font(FontId::proportional(17.0))
+                            .margin(Vec2::new(10.0, 7.0))
+                            .desired_width(f32::INFINITY),
+                    );
+                    if let Some(line) = &self.line {
+                        let languages = line.languages();
+                        if languages.len() > 1 {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Langue du pack LINE").color(theme::MUTED));
+                                let mut lang = self.lang.clone();
+                                egui::ComboBox::from_id_salt("lang")
+                                    .selected_text(&lang)
+                                    .show_ui(ui, |ui| {
+                                        for l in &languages {
+                                            ui.selectable_value(&mut lang, l.clone(), l);
+                                        }
+                                    });
+                                if lang != self.lang {
+                                    self.title = line.title(&lang);
+                                    self.author = line.author(&lang);
+                                    self.lang = lang;
                                 }
                             });
-                        if lang != self.lang {
-                            self.title = line.title(&lang);
-                            self.author = line.author(&lang);
-                            self.lang = lang;
                         }
-                        ui.end_row();
                     }
-                }
-
-                ui.label("Taille");
-                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(theme::section("Taille des stickers", theme::BLUE));
                     let before = self.fit;
                     ui.radio_value(
                         &mut self.fit,
@@ -459,43 +631,79 @@ impl App {
                         );
                     restart = before != self.fit;
                 });
-                ui.end_row();
-
-                ui.label("Couverture");
-                ui.horizontal(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(96.0), Sense::hover());
+            });
+            theme::card().show(ui, |ui| {
+                ui.set_width(180.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(theme::section("Couverture", theme::PINK));
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(150.0), Sense::hover());
                     if let Some(item) = cover.and_then(|c| self.items.get(c)) {
                         paint_preview(ui, rect, &item.preview, Some(time));
                     }
-                    ui.weak("Clic droit sur un sticker dans « Sélection » pour la changer.");
+                    ui.label(
+                        RichText::new(
+                            "Clic droit sur un sticker de l'étape « Choisis » pour la changer.",
+                        )
+                        .size(13.0)
+                        .color(theme::MUTED),
+                    );
                 });
-                ui.end_row();
             });
+        });
         if restart {
             self.restart_conversion();
         }
 
-        ui.add_space(8.0);
-        ui.separator();
+        ui.add_space(12.0);
         let problems = self.problems();
         if problems.is_empty() {
-            ui.colored_label(Color32::from_rgb(60, 170, 90), "✔ Le pack est prêt.");
+            theme::tinted_card(theme::GREEN).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let total: usize = self
+                    .build_pack()
+                    .stickers
+                    .iter()
+                    .map(|s| s.data.len())
+                    .sum();
+                ui.horizontal(|ui| {
+                    ui.label(theme::section("✔ Tout est prêt !", theme::GREEN));
+                    ui.label(
+                        RichText::new(format!(
+                            "{} stickers, {} Kio au total",
+                            self.selected().count(),
+                            total.div_ceil(1024)
+                        ))
+                        .color(theme::MUTED),
+                    );
+                });
+            });
         } else {
-            for p in problems.iter().take(8) {
-                ui.colored_label(ui.visuals().warn_fg_color, format!("• {p}"));
-            }
-            if problems.len() > 8 {
-                ui.weak(format!("… et {} autres", problems.len() - 8));
-            }
+            theme::tinted_card(theme::ORANGE).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(theme::section("Encore un petit effort", theme::ORANGE));
+                for p in problems.iter().take(8) {
+                    ui.label(RichText::new(format!("• {p}")).color(theme::INK));
+                }
+                if problems.len() > 8 {
+                    ui.label(
+                        RichText::new(format!("… et {} autres", problems.len() - 8))
+                            .color(theme::MUTED),
+                    );
+                }
+            });
         }
 
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         let ready = problems.is_empty() && self.busy.is_none();
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(ready, egui::Button::new("Exporter le dossier…"))
-                .clicked()
-            {
+            let send =
+                theme::primary("Envoyer à Signal", theme::BLUE).min_size(Vec2::new(220.0, 48.0));
+            if ui.add_enabled(ready, send).clicked() {
+                self.upload.open = true;
+            }
+            let export = theme::primary("Exporter un dossier", theme::GREEN)
+                .min_size(Vec2::new(220.0, 48.0));
+            if ui.add_enabled(ready, export).clicked() {
                 if let Some(dir) = rfd::FileDialog::new()
                     .set_title("Dossier de destination")
                     .pick_folder()
@@ -506,38 +714,69 @@ impl App {
                     self.worker.export(self.build_pack(), dir);
                 }
             }
-            if ui
-                .add_enabled(ready, egui::Button::new("Envoyer à Signal…"))
-                .clicked()
-            {
-                self.upload.open = true;
-            }
         });
+    }
 
+    /// Résultat du dernier envoi ou export, affiché en haut de l'écran du pack.
+    fn results(&self, ui: &mut egui::Ui) {
+        if let Some(url) = &self.result_url {
+            egui::Frame::new()
+                .fill(theme::PURPLE)
+                .corner_radius(18)
+                .inner_margin(Margin::same(20))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        if let Some(party) = self.emojis.image("🎉", 28.0) {
+                            ui.add(party);
+                        }
+                        ui.label(
+                            RichText::new("Pack envoyé ! Il n'y a plus qu'à l'ouvrir dans Signal.")
+                                .family(theme::heavy())
+                                .size(20.0)
+                                .color(Color32::WHITE),
+                        );
+                    });
+                    egui::Frame::new()
+                        .fill(Color32::WHITE)
+                        .corner_radius(10)
+                        .inner_margin(Margin::symmetric(12, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(RichText::new(url).monospace().color(theme::INK))
+                                    .wrap(),
+                            );
+                        });
+                    ui.horizontal(|ui| {
+                        let button = |text: &str| {
+                            egui::Button::new(
+                                RichText::new(text)
+                                    .color(theme::PURPLE)
+                                    .family(theme::heavy()),
+                            )
+                            .fill(Color32::WHITE)
+                            .stroke(Stroke::NONE)
+                            .corner_radius(12)
+                        };
+                        if ui.add(button("Copier le lien")).clicked() {
+                            ui.ctx().copy_text(url.clone());
+                        }
+                        if ui.add(button("Ouvrir dans Signal")).clicked() {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
+                    });
+                });
+        }
         if let Some(path) = &self.exported {
-            ui.add_space(8.0);
-            ui.group(|ui| {
-                ui.strong("Dossier exporté");
+            theme::tinted_card(theme::GREEN).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(theme::section("Dossier exporté !", theme::GREEN));
                 ui.label(RichText::new(path.display().to_string()).monospace());
                 ui.label(
                     "Dans Signal Desktop : Fichier → Créer/téléverser un pack de stickers, \
                      ajoute les fichiers 001.png, 002.png… puis reprends les emojis listés dans pack.json.",
                 );
-            });
-        }
-        if let Some(url) = &self.result_url {
-            ui.add_space(8.0);
-            ui.group(|ui| {
-                ui.strong("Pack envoyé !");
-                ui.add(egui::Label::new(RichText::new(url).monospace()).wrap());
-                ui.horizontal(|ui| {
-                    if ui.button("Copier le lien").clicked() {
-                        ui.ctx().copy_text(url.clone());
-                    }
-                    if ui.button("Ouvrir").clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                    }
-                });
             });
         }
     }
@@ -557,10 +796,10 @@ impl App {
         let mut open = true;
         let mut send = false;
         let dialog = &mut self.upload;
-        egui::Window::new("Envoyer à Signal")
+        egui::Window::new(theme::section("Envoyer à Signal", theme::BLUE))
             .collapsible(false)
             .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label(
@@ -578,18 +817,26 @@ impl App {
                     ui.label("3. Colle les deux valeurs ci-dessous.");
                 });
                 ui.add_space(6.0);
-                egui::Grid::new("creds").num_columns(2).show(ui, |ui| {
-                    ui.label("Identifiant (uuid_id)");
-                    ui.add(TextEdit::singleline(&mut dialog.creds.username).desired_width(320.0));
-                    ui.end_row();
-                    ui.label("Mot de passe");
-                    ui.add(
-                        TextEdit::singleline(&mut dialog.creds.password)
-                            .password(true)
-                            .desired_width(320.0),
-                    );
-                    ui.end_row();
-                });
+                egui::Grid::new("creds")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Identifiant (uuid_id)");
+                        ui.add(
+                            TextEdit::singleline(&mut dialog.creds.username)
+                                .margin(Vec2::new(10.0, 6.0))
+                                .desired_width(320.0),
+                        );
+                        ui.end_row();
+                        ui.label("Mot de passe");
+                        ui.add(
+                            TextEdit::singleline(&mut dialog.creds.password)
+                                .password(true)
+                                .margin(Vec2::new(10.0, 6.0))
+                                .desired_width(320.0),
+                        );
+                        ui.end_row();
+                    });
                 ui.checkbox(
                     &mut dialog.remember,
                     "Mémoriser dans le trousseau du système",
@@ -598,7 +845,7 @@ impl App {
                 let filled = !dialog.creds.username.trim().is_empty()
                     && !dialog.creds.password.trim().is_empty();
                 send = ui
-                    .add_enabled(filled, egui::Button::new("Envoyer"))
+                    .add_enabled(filled, theme::primary("Envoyer", theme::BLUE))
                     .clicked();
             });
         if !open {
@@ -629,38 +876,46 @@ impl eframe::App for App {
         for msg in self.worker.poll() {
             self.handle(msg);
         }
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::CARD)
+                    .inner_margin(Margin::symmetric(16, 8))
+                    .stroke(theme::stroke(1.0, theme::BORDER)),
+            )
+            .show(ctx, |ui| self.status_bar(ui));
         egui::SidePanel::left("steps")
             .resizable(false)
-            .exact_width(170.0)
-            .show(ctx, |ui| self.steps(ui));
-        egui::CentralPanel::default().show(ctx, |ui| match self.step {
-            Step::Import => self.import_panel(ui),
-            Step::Selection => self.selection_panel(ui),
-            Step::Pack => {
-                egui::ScrollArea::vertical()
-                    .show(ui, |ui| self.pack_panel(ui))
-                    .inner
-            }
-        });
+            .exact_width(240.0)
+            .frame(egui::Frame::new())
+            .show(ctx, |ui| self.sidebar(ui));
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::BG)
+                    .inner_margin(Margin::symmetric(28, 22)),
+            )
+            .show(ctx, |ui| match self.step {
+                Step::Import => self.import_panel(ui),
+                Step::Selection => self.selection_panel(ui),
+                Step::Pack => {
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| self.pack_panel(ui))
+                        .inner
+                }
+            });
         self.upload_window(ctx);
     }
 }
 
-/// Ajoute Noto Sans JP en repli des polices d'egui, pour les titres en japonais.
-fn install_fonts(ctx: &egui::Context) {
-    const NAME: &str = "noto-sans-jp";
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        NAME.into(),
-        Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/fonts/NotoSansJP-Regular.otf"
-        ))),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push(NAME.into());
-    }
-    ctx.set_fonts(fonts);
+fn load_icon(ctx: &egui::Context) -> TextureHandle {
+    let image = image::load_from_memory(include_bytes!("../assets/icon.png"))
+        .expect("icône PNG valide")
+        .resize(128, 128, image::imageops::FilterType::Lanczos3)
+        .to_rgba8();
+    let size = [image.width() as usize, image.height() as usize];
+    let image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+    ctx.load_texture("icon", image, TextureOptions::LINEAR)
 }
 
 /// Retire les guillemets copiés avec une valeur de la console.
@@ -668,80 +923,176 @@ fn unquote(s: &str) -> String {
     s.trim().trim_matches(['"', '\'']).to_string()
 }
 
-/// Carte d'un sticker ; renvoie `true` si l'utilisateur en fait la couverture.
-fn sticker_card(ui: &mut egui::Ui, item: &mut Item, is_cover: bool, time: f64) -> bool {
-    let mut make_cover = false;
-    let stroke = if item.selected {
-        ui.visuals().selection.stroke
+/// Étape de la barre latérale : pastille numérotée, titre et sous-titre.
+fn step_button(
+    ui: &mut egui::Ui,
+    number: usize,
+    step: Step,
+    active: bool,
+    enabled: bool,
+) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
     } else {
-        ui.visuals().widgets.noninteractive.bg_stroke
+        Sense::hover()
     };
-    egui::Frame::group(ui.style())
-        .stroke(stroke)
-        .show(ui, |ui| {
-            ui.set_width(CARD_WIDTH);
-            ui.vertical_centered(|ui| {
-                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(THUMB), Sense::click());
-                paint_preview(ui, rect, &item.preview, resp.hovered().then_some(time));
-                if !item.selected {
-                    ui.painter().rect_filled(
-                        rect,
-                        4.0,
-                        ui.visuals().panel_fill.gamma_multiply(0.7),
-                    );
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 58.0), sense);
+    let painter = ui.painter();
+    let alpha = if enabled { 1.0 } else { 0.45 };
+    if active {
+        painter.rect_filled(rect, 16.0, Color32::WHITE);
+    } else if resp.hovered() {
+        painter.rect_filled(rect, 16.0, Color32::from_white_alpha(40));
+    }
+    if enabled && !active && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let center = egui::pos2(rect.left() + 30.0, rect.center().y);
+    let (circle, digit) = if active {
+        (step.color(), Color32::WHITE)
+    } else {
+        (Color32::from_white_alpha(60), Color32::WHITE)
+    };
+    painter.circle_filled(center, 16.0, circle.gamma_multiply(alpha));
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        number.to_string(),
+        FontId::new(17.0, theme::heavy()),
+        digit.gamma_multiply(alpha),
+    );
+    let (head, tail) = step.labels();
+    let (head_color, tail_color) = if active {
+        (theme::INK, theme::MUTED)
+    } else {
+        (Color32::WHITE, Color32::from_white_alpha(210))
+    };
+    let x = rect.left() + 58.0;
+    painter.text(
+        egui::pos2(x, rect.center().y - 9.0),
+        Align2::LEFT_CENTER,
+        head,
+        FontId::new(18.0, theme::heavy()),
+        head_color.gamma_multiply(alpha),
+    );
+    painter.text(
+        egui::pos2(x, rect.center().y + 11.0),
+        Align2::LEFT_CENTER,
+        tail,
+        FontId::proportional(13.0),
+        tail_color.gamma_multiply(alpha),
+    );
+    resp
+}
+
+/// Carte d'un sticker ; renvoie `true` si l'utilisateur en fait la couverture.
+fn sticker_card(
+    ui: &mut egui::Ui,
+    item: &mut Item,
+    emojis: &Emojis,
+    is_cover: bool,
+    time: f64,
+) -> bool {
+    let mut make_cover = false;
+    let frame = if item.selected {
+        theme::card().stroke(theme::stroke(2.5, theme::PINK))
+    } else {
+        theme::card()
+            .stroke(theme::stroke(2.5, theme::BORDER))
+            .shadow(egui::Shadow::NONE)
+    };
+    frame.inner_margin(Margin::same(10)).show(ui, |ui| {
+        ui.set_width(THUMB);
+        ui.vertical(|ui| {
+            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(THUMB), Sense::click());
+            paint_preview(ui, rect, &item.preview, resp.hovered().then_some(time));
+            let painter = ui.painter();
+            if !item.selected {
+                painter.rect_filled(rect, 12.0, Color32::from_white_alpha(150));
+            }
+            // Pastille de sélection, en haut à droite.
+            let badge = rect.right_top() + Vec2::new(-12.0, 12.0);
+            if item.selected {
+                painter.circle_filled(badge, 11.0, theme::PINK);
+                painter.text(
+                    badge,
+                    Align2::CENTER_CENTER,
+                    "✔",
+                    FontId::proportional(13.0),
+                    Color32::WHITE,
+                );
+            } else {
+                painter.circle(
+                    badge,
+                    10.0,
+                    Color32::WHITE,
+                    theme::stroke(1.5, theme::BORDER),
+                );
+            }
+            if is_cover {
+                let star = rect.left_top() + Vec2::new(12.0, 12.0);
+                painter.circle_filled(star, 11.0, theme::YELLOW);
+                painter.text(
+                    star,
+                    Align2::CENTER_CENTER,
+                    "★",
+                    FontId::proportional(14.0),
+                    Color32::WHITE,
+                );
+            }
+            if item.animated {
+                let tag = egui::Rect::from_min_size(
+                    rect.left_bottom() + Vec2::new(6.0, -24.0),
+                    Vec2::new(22.0, 18.0),
+                );
+                painter.rect_filled(tag, 6.0, theme::PURPLE.gamma_multiply(0.85));
+                painter.text(
+                    tag.center(),
+                    Align2::CENTER_CENTER,
+                    "▶",
+                    FontId::proportional(10.0),
+                    Color32::WHITE,
+                );
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let resp = resp.on_hover_text(if is_cover {
+                "Couverture du pack"
+            } else {
+                "Clic droit : définir comme couverture"
+            });
+            if resp.clicked() {
+                item.selected = !item.selected;
+            }
+            resp.context_menu(|ui| {
+                if ui.button("★ Définir comme couverture").clicked() {
+                    make_cover = true;
+                    ui.close();
                 }
-                if resp.clicked() {
-                    item.selected = !item.selected;
-                }
-                resp.context_menu(|ui| {
-                    if ui.button("Définir comme couverture").clicked() {
-                        make_cover = true;
-                        ui.close();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut item.selected, "");
-                    ui.add(TextEdit::singleline(&mut item.emoji).desired_width(32.0));
-                    emoji_menu(ui, &mut item.emoji);
-                });
-                ui.horizontal(|ui| {
-                    size_label(ui, &item.converted);
-                    if item.animated {
-                        ui.weak("animé");
-                    }
-                    if is_cover {
-                        ui.label("★").on_hover_text("Couverture du pack");
-                    }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                emojis.picker(ui, &mut item.emoji, 22.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    size_chip(ui, &item.converted);
                 });
             });
         });
+    });
     make_cover
 }
 
-fn emoji_menu(ui: &mut egui::Ui, target: &mut String) {
-    ui.menu_button("▾", |ui| {
-        ui.set_max_width(250.0);
-        ui.horizontal_wrapped(|ui| {
-            for emoji in EMOJIS {
-                if ui.button(RichText::new(*emoji).size(18.0)).clicked() {
-                    *target = emoji.to_string();
-                    ui.close();
-                }
-            }
-        });
-    });
-}
-
-fn size_label(ui: &mut egui::Ui, converted: &Option<Result<Arc<Converted>, String>>) {
+fn size_chip(ui: &mut egui::Ui, converted: &Option<Result<Arc<Converted>, String>>) {
     match converted {
         None => {
-            ui.add(egui::Spinner::new().size(12.0));
+            ui.add(egui::Spinner::new().size(14.0).color(theme::BLUE));
         }
         Some(Ok(c)) => {
-            let color = if c.fits() {
-                ui.visuals().weak_text_color()
-            } else {
-                ui.visuals().error_fg_color
+            let color = match (c.fits(), &c.note) {
+                (false, _) => theme::RED,
+                (true, Some(_)) => theme::ORANGE,
+                (true, None) => theme::GREEN,
             };
             let mut tip = format!("{} × {} px", c.side, c.side);
             if let Some(note) = &c.note {
@@ -750,22 +1101,24 @@ fn size_label(ui: &mut egui::Ui, converted: &Option<Result<Arc<Converted>, Strin
             if !c.fits() {
                 tip.push_str(&format!("\nDépasse la limite de {} Kio", MAX_BYTES / 1024));
             }
-            ui.colored_label(color, format!("{} Kio", c.bytes.len().div_ceil(1024)))
+            theme::chip(ui, format!("{} Kio", c.bytes.len().div_ceil(1024)), color)
                 .on_hover_text(tip);
         }
         Some(Err(e)) => {
-            ui.colored_label(ui.visuals().error_fg_color, "erreur")
-                .on_hover_text(e);
+            theme::chip(ui, "erreur", theme::RED).on_hover_text(e);
         }
     }
 }
 
 /// Dessine l'aperçu dans `rect` ; anime si `time` est fourni.
 fn paint_preview(ui: &mut egui::Ui, rect: egui::Rect, preview: &Preview, time: Option<f64>) {
-    ui.painter()
-        .rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(12),
+        mix(theme::BG, Color32::WHITE, 0.4),
+    );
     if preview.is_empty() {
-        ui.put(rect, egui::Spinner::new());
+        ui.put(rect, egui::Spinner::new().color(theme::PINK));
         return;
     }
     let index = match time {
@@ -777,7 +1130,7 @@ fn paint_preview(ui: &mut egui::Ui, rect: egui::Rect, preview: &Preview, time: O
     };
     let texture = &preview[index].0;
     let size = texture.size_vec2();
-    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let scale = ((rect.width() - 8.0) / size.x).min((rect.height() - 8.0) / size.y);
     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     ui.painter().image(
         texture.id(),
@@ -804,20 +1157,97 @@ fn frame_at(preview: &Preview, time: f64) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+mod screenshots {
     use super::*;
+    use egui_kittest::Harness;
 
+    fn click(harness: &mut Harness<'_, App>, pos: egui::Pos2) {
+        for pressed in [None, Some(true), Some(false)] {
+            harness.input_mut().events.push(match pressed {
+                None => egui::Event::PointerMoved(pos),
+                Some(pressed) => egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            });
+            harness.step();
+        }
+    }
+
+    /// Captures des écrans : `SCREENSHOT_DIR=… cargo test screenshots -- --ignored`.
     #[test]
-    fn japanese_glyphs_are_available() {
-        let ctx = egui::Context::default();
-        install_fonts(&ctx);
-        let _ = ctx.run(egui::RawInput::default(), |_| {});
-        let title = "動くブラウン＆コニー＆サリー スペシャル";
-        for font in [
-            egui::FontId::proportional(14.0),
-            egui::FontId::monospace(14.0),
-        ] {
-            assert!(ctx.fonts(|f| f.has_glyphs(&font, title)));
+    #[ignore = "accès réseau et rendu wgpu"]
+    fn screenshots() {
+        let dir =
+            PathBuf::from(std::env::var("SCREENSHOT_DIR").unwrap_or_else(|_| "screenshots".into()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pack = line::fetch_pack(11537, &|_, _| {}).unwrap();
+        for (size, suffix) in [([1100.0, 760.0], ""), ([900.0, 600.0], "-etroit")] {
+            let mut harness = Harness::builder()
+                .with_size(size)
+                .wgpu()
+                .build_eframe(|cc| App::new(cc));
+            let shoot = |harness: &mut Harness<'_, App>, name: &str| {
+                harness.run_steps(3);
+                let file = dir.join(format!("{name}{suffix}.png"));
+                harness.render().unwrap().save(file).unwrap();
+            };
+            shoot(&mut harness, "0-vide");
+
+            harness.state_mut().input = "https://store.line.me/stickershop/product/11537/fr".into();
+            harness.state_mut().load(pack.clone());
+            for _ in 0..1200 {
+                harness.step();
+                let app = harness.state();
+                if app
+                    .items
+                    .iter()
+                    .all(|i| !i.preview.is_empty() && i.converted.is_some())
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            {
+                let app = harness.state_mut();
+                for i in [3, 7, 8] {
+                    app.items[i].selected = false;
+                }
+                app.items[2].emoji = "🐥".into();
+                app.cover = Some(1);
+            }
+            for (name, step) in [
+                ("1-import", Step::Import),
+                ("2-selection", Step::Selection),
+                ("3-pack", Step::Pack),
+            ] {
+                harness.state_mut().step = step;
+                shoot(&mut harness, name);
+            }
+            harness.state_mut().result_url =
+                Some("https://signal.art/addstickers/#pack_id=0123&pack_key=abcd".into());
+            shoot(&mut harness, "4-envoye");
+            harness.state_mut().upload.open = true;
+            shoot(&mut harness, "5-dialogue");
+
+            // Palette d'emojis ouverte depuis la barre d'outils, puis saisie d'un autre emoji.
+            if suffix.is_empty() {
+                harness.state_mut().upload.open = false;
+                harness.state_mut().step = Step::Selection;
+                harness.run_steps(3);
+                click(&mut harness, egui::pos2(678.0, 142.0));
+                shoot(&mut harness, "6-palette");
+                click(&mut harness, egui::pos2(800.0, 487.0));
+                harness
+                    .input_mut()
+                    .events
+                    .push(egui::Event::Text("🐱".into()));
+                harness.step();
+                shoot(&mut harness, "7-autre");
+                assert_eq!(harness.state().default_emoji, "🐱");
+            }
         }
     }
 }

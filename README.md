@@ -38,14 +38,18 @@ Les binaires de chaque release ne sont pas signés :
   `~/.local/share/applications/` et `line2signal.png` dans `~/.local/share/icons/`,
   avec `line2signal` dans le `PATH`.
 
-La police Noto Sans JP (`assets/fonts`) est distribuée sous licence SIL Open Font License 1.1.
+## Crédits
+
+Polices [Nunito](https://github.com/googlefonts/nunito), [Noto Sans JP](https://github.com/notofonts/noto-cjk)
+et [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) (`assets/fonts`) : SIL Open Font License 1.1.
 
 ## Développement
 
 ```sh
 cargo run
 cargo test                    # tests hors ligne
-cargo test -- --ignored       # téléchargements réels depuis LINE
+cargo test -- --ignored       # téléchargements réels depuis LINE, captures d'écran
+SCREENSHOT_DIR=/tmp/captures cargo test --release screenshots -- --ignored
 ```
 
 Pousser un tag `v*` construit les binaires Linux, Windows et macOS (universel) et publie la release.

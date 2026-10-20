@@ -2,6 +2,8 @@
 
 mod app;
 mod credentials;
+mod emoji;
+mod theme;
 mod worker;
 
 use eframe::egui;
@@ -15,7 +17,7 @@ fn main() -> eframe::Result<()> {
             .with_app_id("line2signal")
             .with_icon(icon)
             .with_inner_size([1040.0, 740.0])
-            .with_min_inner_size([680.0, 480.0]),
+            .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
     eframe::run_native(
